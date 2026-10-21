@@ -1,0 +1,1739 @@
+---
+title: "Mongolia_rodentdata"
+output: html_document
+date: "2026-08-25"
+---
+
+```{r load libraries}
+
+library(readr)
+library(sf)
+library(ggplot2)
+library(dplyr)
+library(raster) 
+library(geodata)
+library(caret)
+library(dismo)
+library(gbm)
+library(pROC)
+library(terra)
+library(ggspatial)
+library(scales)
+library(grid)
+library(viridis)
+
+```
+
+```{r load data}
+
+# First dataset from https://pmc.ncbi.nlm.nih.gov/articles/PMC12602260/ doi: 10.1002/ece3.72468
+    rodents1 <- read_csv("Zhao_rodentpoints.csv")
+    View(rodents1)
+
+# Second dataset from https://pubmed.ncbi.nlm.nih.gov/32936457/ doi: 10.1111/1365-2656.13344
+    rodents2 <- read_csv("Mongolia_Rodents_harrisonsrule.csv")
+    View(rodents2)
+
+```
+
+```{r load shapefiles}
+
+mongoliaoutline <- st_read("mng_admbnda_adm0_nso_20201019.shp")
+
+# Remove rows with missing coordinates
+    rodents1 <- rodents1[!is.na(rodents1$Longitude) & !is.na(rodents1$Latitude), ]
+    rodents2 <- rodents2[!is.na(rodents2$Longitude) & !is.na(rodents2$Latitude), ]
+  
+# Convert coordinates to sf object
+    points1 <- st_as_sf(rodents1, coords = c("Longitude", "Latitude"),crs = 4326, remove = FALSE)
+    points2 <- st_as_sf(rodents2, coords = c("Longitude", "Latitude"),crs = 4326, remove = FALSE)
+    
+# Plot points on shapefile
+    ggplot() +
+      geom_sf(data = mongoliaoutline, fill = "gray90", color = "black") +
+      geom_sf(data = points2, color = "purple", size = 2) +
+      geom_sf(data = points1, color = "red", size = 2) +
+      theme_minimal()
+    
+# remove rodents1 points outside of Mongolia boundary
+    # Keep points inside or on the Mongolia boundary
+      inside1 <- st_intersects(
+        points1, mongoliaoutline, sparse = FALSE
+      )[, 1]
+
+    # Filter rodents1 and points1
+      rodents1 <- rodents1[inside1, ]
+      points1 <- points1[inside1, ]
+      
+# Plot filter points on shapefile
+    ggplot() +
+      geom_sf(data = mongoliaoutline, fill = "gray90", color = "black") +
+      geom_sf(data = points3, color = "green", size = 2) +
+      geom_sf(data = points1, color = "blue", size = 2) +
+      theme_minimal()
+
+```
+
+```{r combine datasets}
+
+# extract genus and standardize species names
+    points1$Genus <- sub(" .*", "", points1$`Rodent species`)
+    points2$Genus <- sub(" .*", "", points2$Species)
+    
+    points1$Species <- points1$`Rodent species`
+    points1$Dataset <- "Rodents 1"
+    
+    points2$Dataset <- "Rodents 2"
+
+# combine datasets
+    rodents_combined <- bind_rows(points1, points2)
+
+# Count unique coordinates per species
+    species_counts <- rodents_combined %>%
+      st_drop_geometry() %>%
+      distinct(Species, Longitude, Latitude) %>%
+      count(Species, name = "unique_coordinates") %>%
+      arrange(desc(unique_coordinates))
+    
+    print(species_counts, n = Inf)
+
+# Keep species with more than 20 unique coordinates
+    species_over20 <- species_counts %>%
+      filter(unique_coordinates > 20)
+
+# Filter the combined spatial dataset
+    rodents_over20 <- rodents_combined %>%
+      semi_join(species_over20, by = "Species")
+
+```
+
+```{r plot by genus}
+
+# Extract genus from each dataset's species column
+    points1$Genus <- word(points1$`Rodent species`, 1)
+    points1$Dataset <- "rodents1"
+    
+    points2$Genus <- word(points2$Species, 1)
+    points2$Dataset <- "rodents2"
+
+# Combine datasets
+   rodents_combined <- bind_rows(points1, points3)
+   
+# Plot by genus
+    ggplot() +
+      geom_sf(data = mongoliaoutline, fill = "gray90", color = "black") +
+      geom_sf(
+        data = rodents_combined,
+        aes(color = Genus, shape = Dataset),
+        size = 2
+      ) +
+      labs(
+        title = "Rodent Genera Distribution in Mongolia",
+        color = "Genus"
+      ) +
+      theme_minimal()
+
+```
+
+```{r load environmental data}
+
+## BIOCLIM ##
+# define where to download rasters & change to "raster" format
+    Mongolia_bioclim_rast <- raster() 
+    {Mongolia_bioclim_rast$AnnMeanTemp <- raster("wc2.1_30s_bio_1.tif")
+    Mongolia_bioclim_rast$MeanDiurnRange <- raster("wc2.1_30s_bio_2.tif")
+    Mongolia_bioclim_rast$Isothermality <- raster("wc2.1_30s_bio_3.tif")
+    Mongolia_bioclim_rast$TempSeasonality <- raster("wc2.1_30s_bio_4.tif")
+    Mongolia_bioclim_rast$MaxTempWarmMnth <- raster("wc2.1_30s_bio_5.tif")
+    Mongolia_bioclim_rast$MinTempColdMnth <- raster("wc2.1_30s_bio_6.tif")
+    Mongolia_bioclim_rast$TempAnnRnge <- raster("wc2.1_30s_bio_7.tif")
+    Mongolia_bioclim_rast$MTempWarmQurt <- raster("wc2.1_30s_bio_10.tif")
+    Mongolia_bioclim_rast$MTempCldQurt <- raster("wc2.1_30s_bio_11.tif")
+    Mongolia_bioclim_rast$AnnPrcp <- raster("wc2.1_30s_bio_12.tif")
+    Mongolia_bioclim_rast$PrcpWetMnth <- raster("wc2.1_30s_bio_13.tif")
+    Mongolia_bioclim_rast$PrcpDryMnth <- raster("wc2.1_30s_bio_14.tif")
+    Mongolia_bioclim_rast$PrcpSeasonality <- raster("wc2.1_30s_bio_15.tif")
+    Mongolia_bioclim_rast$PrcpWetQurt <- raster("wc2.1_30s_bio\\wc2.1_30s_bio_16.tif")
+    Mongolia_bioclim_rast$PrcpDryQrt <- raster("wc2.1_30s_bio\\wc2.1_30s_bio_17.tif")
+      }
+
+# stacking individual rasters into combined raster
+    mongolia_bioclim_stack <- stack(  
+      Mongolia_bioclim_rast$AnnMeanTemp,
+      Mongolia_bioclim_rast$MeanDiurnRange,
+      Mongolia_bioclim_rast$Isothermality,
+      Mongolia_bioclim_rast$TempSeasonality,
+      Mongolia_bioclim_rast$MaxTempWarmMnth,
+      Mongolia_bioclim_rast$MinTempColdMnth,
+      Mongolia_bioclim_rast$TempAnnRnge,
+      Mongolia_bioclim_rast$MTempWarmQurt,
+      Mongolia_bioclim_rast$MTempCldQurt,
+      Mongolia_bioclim_rast$AnnPrcp,
+      Mongolia_bioclim_rast$PrcpWetMnth,
+      Mongolia_bioclim_rast$PrcpDryMnth,
+      Mongolia_bioclim_rast$PrcpSeasonality,
+      Mongolia_bioclim_rast$PrcpWetQurt,
+      Mongolia_bioclim_rast$PrcpDryQrt
+        )
+
+# clip raster to mongolia shapefile
+    mongolia_outline_sp <- as_Spatial(mongoliaoutline)
+    extent_mongolia <- extent (mongolia_outline_sp) # Get extent of shapefile
+    cropped_raster <- crop(mongolia_bioclim_stack, extent_mongolia)
+
+# plot clipped raster
+    bioclimcroppedrast <- mask(cropped_raster, mongolia_outline_sp)
+    plot(bioclimcroppedrast)
+    writeRaster(bioclimcroppedrast,
+            filename = "bioclim_layer_",
+            bylayer = TRUE,
+            format = "GTiff",
+            suffix = "names",
+            overwrite = TRUE)
+
+## ELEVATION ##
+# upload elevation data into a raster
+    elevation <- "wc2.1_30s_elev.tif"
+    
+# convert tif file to rasters
+    elevraster <- raster(elevation)
+    
+# clip raster to mongolia shapefile
+    elevclipped_rast1 <- mask(elevraster, mongolia_outline_sp)
+    elevclipped_rast <- crop(elevclipped_rast1, bioclimcroppedrast)
+    elevclipped_rast <- resample(elevclipped_rast, bioclimcroppedrast, method= "bilinear")
+    
+# plot elevation
+    plot(elevclipped_rast)
+
+## SOIL ##
+# uploading soilgrid data into a raster
+    soilhumidity <- "soilgrid2_mongolia.tif"
+    soilclay <- "clay_soilgrids.tif"
+    soilsand <- "sand_soilgrids.tif"
+    soilsilt <- "silt_soilgrids.tif"
+    soilbulkden <- "bulkdensity_soilgrids.tif"
+    soilcarbondensity <- "carbondensity_soilgrids.tif"
+    soilnitrogen <- "nitrogen_soilgrids.tif"
+    soilpH <- "pHwater_soilgrids.tif"
+    soilcoarse <- "coarsefrag_soilgrids.tif"
+    soilcarbon <- "organiccarbon_soilgrids.tif"
+      
+# convert tif files to rasters
+   soilhumrasters <- raster(soilhumidity)
+   soilclayrasters <- raster(soilclay)
+   soilsandrasters <- raster(soilsand)
+   soilsiltrasters <- raster(soilsilt)
+   soilbulkdenrast <- raster(soilbulkden)
+   soilcarbondenrast <- raster(soilcarbondensity)
+   soilnitrast <- raster(soilnitrogen)
+   soilphrast <- raster(soilpH)
+   soilcoarserast <- raster(soilcoarse)
+   soilcarbonrast <- raster(soilcarbon)
+                          
+# clip raster to mongolia shapefile
+    soilhumclipped_rast1 <- mask(soilhumrasters, mongolia_outline_sp)
+    soilhumclipped_rast <- crop(soilhumclipped_rast1, bioclimcroppedrast)
+    soilhumclipped_rast <- resample(soilhumclipped_rast, bioclimcroppedrast, method= "bilinear")
+    
+    soilclayclipped_rast1 <- mask(soilclayrasters, mongolia_outline_sp)
+    soilclayclipped_rast <- crop(soilclayclipped_rast1, bioclimcroppedrast)
+    soilclayclipped_rast <- resample(soilclayclipped_rast, bioclimcroppedrast, method= "bilinear")
+    
+    soilsandclipped_rast1 <- mask(soilsandrasters, mongolia_outline_sp)
+    soilsandclipped_rast <- crop(soilsandclipped_rast1, bioclimcroppedrast)
+    soilsandclipped_rast <- resample(soilsandclipped_rast, bioclimcroppedrast, method= "bilinear")
+    
+    soilsiltclipped_rast1 <- mask(soilsiltrasters, mongolia_outline_sp)
+    soilsiltclipped_rast <- crop(soilsiltclipped_rast1, bioclimcroppedrast)
+    soilsiltclipped_rast <- resample(soilsiltclipped_rast, bioclimcroppedrast, method= "bilinear")
+    
+    soilbdclipped_rast1 <- mask(soilbulkdenrast, mongolia_outline_sp)
+    soilbdclipped_rast <- crop(soilbdclipped_rast1, bioclimcroppedrast)
+    soilbdclipped_rast <- resample(soilbdclipped_rast, bioclimcroppedrast, method= "bilinear")
+    
+    soilcdclipped_rast1 <- mask(soilcarbondenrast, mongolia_outline_sp)
+    soilcdclipped_rast <- crop(soilcdclipped_rast1, bioclimcroppedrast)
+    soilcdclipped_rast <- resample(soilcdclipped_rast, bioclimcroppedrast, method= "bilinear")
+       
+    soilnitclipped_rast1 <- mask(soilnitrast, mongolia_outline_sp)
+    soilnitclipped_rast <- crop(soilnitclipped_rast1, bioclimcroppedrast)
+    soilnitclipped_rast <- resample(soilnitclipped_rast, bioclimcroppedrast, method= "bilinear")
+           
+    soilphclipped_rast1 <- mask(soilphrast, mongolia_outline_sp)
+    soilphclipped_rast <- crop(soilphclipped_rast1, bioclimcroppedrast)
+    soilphclipped_rast <- resample(soilphclipped_rast, bioclimcroppedrast, method= "bilinear")
+    
+    soilcoarseclipped_rast1 <- mask(soilcoarserast, mongolia_outline_sp)
+    soilcoarseclipped_rast <- crop(soilcoarseclipped_rast1, bioclimcroppedrast)
+    soilcoarseclipped_rast <- resample(soilcoarseclipped_rast, bioclimcroppedrast, method= "bilinear")
+    
+    soilcarbonclipped_rast1 <- mask(soilcarbonrast, mongolia_outline_sp)
+    soilcarbonclipped_rast <- crop(soilcarbonclipped_rast1, bioclimcroppedrast)
+    soilcarbonclipped_rast <- resample(soilcarbonclipped_rast, bioclimcroppedrast, method= "bilinear")
+    
+# plot clipped raster
+    plot(soilhumclipped_rast)
+    plot(soilclayclipped_rast)
+    plot(soilsandclipped_rast)
+    plot(soilsiltclipped_rast)
+    plot(soilbdclipped_rast)
+    plot(soilcdclipped_rast)
+    plot(soilnitclipped_rast)
+    plot(soilphclipped_rast)
+    plot(soilcoarseclipped_rast)
+    plot(soilcarbonclipped_rast)
+    
+## LAND COVER##
+#make type 3 modis a single land cover layer (2018-2022) representing the majority class over years
+#load saved rasterbrick file
+  modis_type3 <- brick("modis_type3.tif")
+
+#define a function to calculate the modal value ignoring NAs
+  modal <- function(x) {
+    ux <- unique(na.omit(x))
+    if(length(ux) == 0) return(NA)
+    ux[which.max(tabulate(match(x,ux)))]
+  }
+  
+#apply modal function pixel-wise (each pixel assigned the most common land-cover value)
+  modis3_modal <- calc(modis_type3, fun=modal)
+  
+#convert to factor
+  modis3_modal <- as.factor(modis3_modal)
+
+#save modis3_modal rasterbrick
+  writeRaster(modis3_modal, filename="modis3_modal.tif", format="GTiff", overwrite= TRUE)
+  
+plot(modis3_modal)
+  
+```
+
+```{r Combining environmental data}
+
+# check rasters CRS
+    crs(bioclimcroppedrast)
+    crs(elevclipped_rast)
+    crs(soilhumclipped_rast)
+    crs(soilclayclipped_rast)
+    crs(soilsandclipped_rast)
+    crs(soilsiltclipped_rast)
+    crs(modis3_modal)
+    
+#crop modis to Mongolia
+    modis3 <- crop(modis3_modal, extent(bioclimcroppedrast))
+    
+#check extent
+    extent(bioclimcroppedrast)
+    extent(elevclipped_rast)
+    extent(soilhumclipped_rast)
+    extent(soilclayclipped_rast)
+    extent(soilsandclipped_rast)
+    extent(soilsiltclipped_rast)
+    extent(modis3)
+
+# convert to as.factor
+    modis_resampled <-  resample(modis3, bioclimcroppedrast, method="ngb")
+    modis3_raster <- as.factor(modis_resampled)
+
+#resample soil raster to Bioclim (continuous)
+    soilhum_resampled <-  resample(soilhumclipped_rast, bioclimcroppedrast, method="bilinear")
+    soilclay_resampled <-  resample (soilclayclipped_rast, bioclimcroppedrast, method= "bilinear")
+    soilsand_resampled <-  resample (soilsandclipped_rast, bioclimcroppedrast, method= "bilinear")
+    soilsilt_resampled <-  resample (soilsiltclipped_rast, bioclimcroppedrast, method= "bilinear")
+    elev_resampled <-  resample (elevclipped_rast, bioclimcroppedrast, method= "bilinear")
+    soilbd_resampled <-  resample (soilbdclipped_rast, bioclimcroppedrast, method= "bilinear")
+    soilcd_resampled <-  resample (soilcdclipped_rast, bioclimcroppedrast, method= "bilinear")
+    soilnit_resampled <-  resample (soilnitclipped_rast, bioclimcroppedrast, method= "bilinear")
+    soilph_resampled <-  resample (soilphclipped_rast, bioclimcroppedrast, method= "bilinear")
+    soilcoarse_resampled <-  resample (soilcoarseclipped_rast, bioclimcroppedrast, method= "bilinear")
+    soilcarbon_resampled <-  resample (soilcarbonclipped_rast, bioclimcroppedrast, method= "bilinear")
+
+# combine environmental data rasters
+    environmental_combined <- stack(
+        bioclimcroppedrast,
+        modis3_raster,
+        soilhum_resampled,
+        soilclay_resampled,
+        soilsand_resampled,
+        soilsilt_resampled,
+        elev_resampled,
+        soilbd_resampled,
+        soilcd_resampled,
+        soilnit_resampled,
+        soilph_resampled,
+        soilcoarse_resampled,
+        soilcarbon_resampled
+    )
+
+# check CRS for raster
+    crs(environmental_combined)
+    
+# reset MODIS as factor
+    environmental_combined[[2]] <- as.factor(environmental_combined[[2]])
+    
+# save env raster
+  save(environmental_combined, file = "environmental_combined.RData")
+
+```
+
+```{r VIF}
+
+# define variables to exclude
+    drop_vars <- c(
+      "AnnMeanTemp",
+      "TempAnnRnge",
+      "TempSeasonality",
+      "PrcpDryQrt",
+      "MeanDiurnRange",
+      "MaxTempWarmMnth",
+      "MTempWarmQurt",
+      "MTempCldQurt",
+      "Isothermality",
+      "PrcpWetQurt",
+      "PrcpDryQurt",
+      "PrcpWetMnth",
+      "AnnPrcp",
+      "soilgrid2_mongolia",
+      "pHwater_soilgrids",
+      "sand_soilgrids",
+      "nitrogen_soilgrids",
+      "bulkdensity_soilgrids",
+      "silt_soilgrids",
+      "carbondensity_soilgrids",
+      "layer"
+    )
+
+# split occurrence data by species
+    species_list <- split(rodents_over20, rodents_over20$'Rodent species')
+
+# Store VIF results and diagnostic information
+    vif_results <- list()
+    vif_summary <- data.frame()
+    
+    for (sp in names(species_list)) {
+
+      cat("\nProcessing species:", sp, "\n")
+    
+      # Get records for this species and retain unique coordinates
+      sp_data <- species_list[[sp]]
+      coords <- st_coordinates(sp_data)
+    
+      unique_idx <- !duplicated(
+        data.frame(Longitude = coords[, 1], Latitude = coords[, 2])
+      )
+    
+      sp_data <- sp_data[unique_idx, ]
+      coords <- st_coordinates(sp_data)
+    
+      # Extract environmental variables at occurrence locations
+      env <- raster::extract(environmental_combined, coords)
+    
+      env <- as.data.frame(env)
+    
+      # Remove rows with missing environmental values
+      env <- env[complete.cases(env), , drop = FALSE]
+    
+      # Remove selected environmental variables
+      env <- env[, !names(env) %in% drop_vars, drop = FALSE]
+    
+      # Remove non-variable predictors
+      variable_cols <- vapply(env, function(x) {
+        length(unique(x)) > 1
+      }, logical(1))
+    
+      env <- env[, variable_cols, drop = FALSE]
+    
+      # Check whether enough records remain
+      if (nrow(env) < 2 || ncol(env) < 2) {
+        cat("Skipped: insufficient complete records or predictors\n")
+        next
+      }
+    
+      # Run VIF, capturing errors for problematic species
+      result <- tryCatch(
+        usdm::vif(env),
+        error = function(e) {
+          cat("VIF failed for", sp, ":", conditionMessage(e), "\n")
+          NULL
+        }
+      )
+    
+      if (!is.null(result)) {
+        vif_results[[sp]] <- result
+    
+        vif_summary <- rbind(
+          vif_summary,
+          data.frame(
+            Species = sp,
+            Unique_locations = nrow(sp_data),
+            Complete_records = nrow(env),
+            Predictors = ncol(env)
+          )
+        )
+    
+        cat("VIF completed for:", sp, "\n")
+        print(result)
+      }
+    }
+
+# Review species processed successfully
+    print(vif_summary)
+
+# Inspect VIF results for a particular species
+    names(vif_results)
+
+```
+
+```{r Pseudoabsences}
+
+# environmental predictors retained after VIF
+    rodent_vars <- c(
+      "MinTempColdMnth",
+      "PrcpDryMnth",
+      "PrcpSeasonality",
+      "clay_soilgrids",
+      "wc2.1_30s_elev",
+      "coarsefrag_soilgrids",
+      "organiccarbon_soilgrids"
+    )
+
+    missing_vars <- setdiff(
+      rodent_vars,
+      names(environmental_combined)
+    )
+
+    if (length(missing_vars) > 0) {
+      stop(
+        "Missing environmental layers: ",
+        paste(missing_vars, collapse = ", ")
+      )
+    }
+
+    environmental_rodents <- environmental_combined[[rodent_vars]]
+
+# define species and replicate settings
+    set.seed(100)
+    nrep <- 50
+    
+    species_list <- split(rodents_over20, rodents_over20$Species)
+    
+    rodent_train_list <- list()
+    rodent_test_list <- list()
+    
+    # Use first raster layer to identify raster cells
+    reference_raster <- environmental_rodents[[1]]
+
+# process each species
+    for (sp_name in names(species_list)) {
+    
+      # Unique presence coordinates
+      sp_data <- species_list[[sp_name]] %>%
+        st_drop_geometry() %>%
+        filter(
+          !is.na(Longitude),
+          !is.na(Latitude)
+        ) %>%
+        distinct(Longitude, Latitude)
+    
+      if (nrow(sp_data) < 10) {
+        warning("Skipping ", sp_name, ": fewer than 10 locations.")
+        next
+      }
+    
+      presence_sf <- st_as_sf(
+        sp_data,
+        coords = c("Longitude", "Latitude"),
+        crs = 4326
+      )
+    
+      # Keep presence points within/on Mongolia
+      inside <- st_intersects(
+        presence_sf,
+        mongolia_outline_sp,
+        sparse = FALSE
+      )[, 1]
+    
+      presence_sf <- presence_sf[inside, ]
+    
+      if (nrow(presence_sf) < 10) {
+        warning("Skipping ", sp_name, ": too few points in Mongolia.")
+        next
+      }
+    
+      # Raster cell IDs for presence locations
+      presence_xy <- st_coordinates(presence_sf)
+    
+      presence_cells <- raster::cellFromXY(
+        reference_raster,
+        presence_xy
+      )
+    
+      presence_cells <- unique(
+        presence_cells[!is.na(presence_cells)]
+      )
+    
+      # Remove presences falling outside raster coverage
+      valid_presence <- !is.na(
+        raster::extract(reference_raster, presence_xy)
+      )
+    
+      presence_sf <- presence_sf[valid_presence, ]
+    
+      if (nrow(presence_sf) < 10) {
+        warning("Skipping ", sp_name, ": insufficient raster coverage.")
+        next
+      }
+    
+      presence_sf$presence <- 1
+    
+      # Recalculate cells after filtering
+      presence_cells <- unique(
+        raster::cellFromXY(
+          reference_raster,
+          st_coordinates(presence_sf)
+        )
+      )
+    
+      n_presence <- nrow(presence_sf)
+    
+      rodent_train_list[[sp_name]] <- vector("list", nrep)
+      rodent_test_list[[sp_name]] <- vector("list", nrep)
+    
+      # generate pseudoabsences for each replicate
+      for (r in seq_len(nrep)) {
+    
+        # Accumulate valid background points
+        pseudo_candidates <- list()
+        n_found <- 0
+        attempts <- 0
+        max_attempts <- 100
+    
+        while (n_found < n_presence &&
+               attempts < max_attempts) {
+    
+          attempts <- attempts + 1
+    
+          # Oversample candidate locations within Mongolia
+          candidate_geom <- st_sample(
+            mongolia_boundary,
+            size = max(100, 3 * (n_presence - n_found)),
+            type = "random"
+          )
+    
+          candidate_sf <- st_sf(geometry = candidate_geom)
+    
+          # Extract predictor values
+          candidate_env <- raster::extract(
+            environmental_rodents,
+            as(candidate_sf, "Spatial")
+          )
+    
+          candidate_env <- as.data.frame(candidate_env)
+    
+          # Remove candidates with missing predictors
+          complete <- complete.cases(candidate_env)
+    
+          candidate_sf <- candidate_sf[complete, ]
+          candidate_env <- candidate_env[complete, , drop = FALSE]
+    
+          if (nrow(candidate_sf) == 0) next
+    
+          # Exclude raster cells containing presences
+          candidate_cells <- raster::cellFromXY(
+            reference_raster,
+            st_coordinates(candidate_sf)
+          )
+    
+          keep <- !is.na(candidate_cells) &
+            !(candidate_cells %in% presence_cells)
+    
+          candidate_sf <- candidate_sf[keep, ]
+          candidate_cells <- candidate_cells[keep]
+    
+          if (nrow(candidate_sf) == 0) next
+    
+          # Avoid duplicate pseudoabsence raster cells
+          previously_sampled <- if (length(pseudo_candidates) > 0) {
+            unlist(lapply(
+              pseudo_candidates,
+              function(x) x$cells
+            ))
+          } else {
+            integer(0)
+          }
+    
+          keep <- !(candidate_cells %in% previously_sampled)
+    
+          candidate_sf <- candidate_sf[keep, ]
+          candidate_cells <- candidate_cells[keep]
+    
+          if (nrow(candidate_sf) == 0) next
+    
+          # Retain only the number still needed
+          n_needed <- n_presence - n_found
+          take <- min(n_needed, nrow(candidate_sf))
+    
+          candidate_sf <- candidate_sf[seq_len(take), ]
+          candidate_cells <- candidate_cells[seq_len(take)]
+    
+          pseudo_candidates[[length(pseudo_candidates) + 1]] <-
+            list(points = candidate_sf, cells = candidate_cells)
+    
+          n_found <- n_found + take
+        }
+    
+        if (n_found < n_presence) {
+          warning(
+            "Insufficient valid pseudoabsences for ",
+            sp_name, ", replicate ", r,
+            ". Skipping this replicate."
+          )
+          next
+        }
+    
+        pseudo_sf <- do.call(
+          rbind,
+          lapply(pseudo_candidates, function(x) x$points)
+        )
+    
+        pseudo_sf$presence <- 0
+    
+        # Combine presences and pseudoabsences
+        all_points <- rbind(
+          presence_sf[, "presence"],
+          pseudo_sf[, "presence"]
+        )
+    
+        # split 75% training and 25% testing
+        train_index <- caret::createDataPartition(
+          all_points$presence,
+          p = 0.75,
+          list = FALSE
+        )
+    
+        train_sf <- all_points[train_index, ]
+        test_sf <- all_points[-train_index, ]
+    
+        # extract environmental predictors
+        train_env <- as.data.frame(
+          raster::extract(
+            environmental_rodents,
+            as(train_sf, "Spatial")
+          )
+        )
+    
+        test_env <- as.data.frame(
+          raster::extract(
+            environmental_rodents,
+            as(test_sf, "Spatial")
+          )
+        )
+    
+        train_df <- data.frame(
+          presence = train_sf$presence,
+          train_env
+        )
+    
+        test_df <- data.frame(
+          presence = test_sf$presence,
+          test_env
+        )
+    
+        train_df <- na.omit(train_df)
+        test_df <- na.omit(test_df)
+    
+        # Store replicate datasets
+        rodent_train_list[[sp_name]][[r]] <- train_df
+        rodent_test_list[[sp_name]][[r]] <- test_df
+      }
+    
+      # Save after each species
+      saveRDS(
+        rodent_train_list,
+        "rodent_train_list.rds"
+      )
+    
+      saveRDS(
+        rodent_test_list,
+        "rodent_test_list.rds"
+      )
+    }
+
+# check results
+    print(names(rodent_train_list))
+    
+    first_species <- names(rodent_train_list)[1]
+    
+    print(dim(rodent_train_list[[first_species]][[1]]))
+    print(dim(rodent_test_list[[first_species]][[1]]))
+    
+    print(names(rodent_train_list[[first_species]][[1]]))
+    
+    table(rodent_train_list[[first_species]][[1]]$presence)
+    table(rodent_test_list[[first_species]][[1]]$presence)
+
+
+```
+
+```{r BRT 50 replicates}
+
+# load training and testing datasets
+    rodent_train_list <- readRDS("rodent_train_list.rds")
+    rodent_test_list  <- readRDS("rodent_test_list.rds")
+
+# output directory
+    output_folder <- "Rodent_BRT_Results"
+    
+    dir.create(output_folder, showWarnings = FALSE, recursive = TRUE)
+    dir.create(file.path(output_folder, "Models"),
+               showWarnings = FALSE)
+    dir.create(file.path(output_folder, "Maps"),
+               showWarnings = FALSE)
+    dir.create(file.path(output_folder, "Variable_Importance"),
+               showWarnings = FALSE)
+
+# number of replicates
+    nrep <- 50
+
+# functions for model evaluation
+    calculate_metrics <- function(observed, predicted) {
+    
+      # Remove missing predictions
+      keep <- complete.cases(observed, predicted)
+      observed <- observed[keep]
+      predicted <- predicted[keep]
+    
+      if (length(unique(observed)) < 2) {
+        return(data.frame(
+          AUC = NA_real_,
+          Threshold = NA_real_,
+          Sensitivity = NA_real_,
+          Specificity = NA_real_,
+          TSS = NA_real_
+        ))
+      }
+    
+      # AUC
+      auc_value <- tryCatch({
+        as.numeric(
+          pROC::auc(
+            pROC::roc(
+              observed,
+              predicted,
+              levels = c(0, 1),
+              direction = "<",
+              quiet = TRUE
+            )
+          )
+        )
+      }, error = function(e) NA_real_)
+    
+      # Find the threshold maximizing TSS
+      thresholds <- sort(unique(predicted))
+    
+      if (length(thresholds) > 500) {
+        thresholds <- unique(as.numeric(
+          quantile(predicted, probs = seq(0, 1, length.out = 500),
+                   na.rm = TRUE)
+        ))
+      }
+    
+      results <- lapply(thresholds, function(threshold) {
+    
+        predicted_class <- ifelse(predicted >= threshold, 1, 0)
+    
+        TP <- sum(observed == 1 & predicted_class == 1)
+        FN <- sum(observed == 1 & predicted_class == 0)
+        TN <- sum(observed == 0 & predicted_class == 0)
+        FP <- sum(observed == 0 & predicted_class == 1)
+    
+        sensitivity <- if ((TP + FN) > 0) {
+          TP / (TP + FN)
+        } else {
+          NA_real_
+        }
+    
+        specificity <- if ((TN + FP) > 0) {
+          TN / (TN + FP)
+        } else {
+          NA_real_
+        }
+    
+        data.frame(
+          Threshold = threshold,
+          Sensitivity = sensitivity,
+          Specificity = specificity,
+          TSS = sensitivity + specificity - 1
+        )
+      })
+    
+      results <- do.call(rbind, results)
+      results <- results[is.finite(results$TSS), ]
+    
+      if (nrow(results) == 0) {
+        return(data.frame(
+          AUC = auc_value,
+          Threshold = NA_real_,
+          Sensitivity = NA_real_,
+          Specificity = NA_real_,
+          TSS = NA_real_
+        ))
+      }
+    
+      best <- results[which.max(results$TSS), ]
+    
+      data.frame(
+        AUC = auc_value,
+        Threshold = best$Threshold,
+        Sensitivity = best$Sensitivity,
+        Specificity = best$Specificity,
+        TSS = best$TSS
+      )
+    }
+
+# store results
+    evaluation_results <- list()
+    importance_results <- list()
+    boyce_results <- list()
+
+# fit BRTs for each rodent species
+    species_list <- intersect(
+      names(rodent_train_list),
+      names(rodent_test_list)
+    )
+    
+    for (sp_name in species_list) {
+    
+      message("\n========================================")
+      message("Species: ", sp_name)
+      message("========================================")
+    
+      train_reps <- rodent_train_list[[sp_name]]
+      test_reps  <- rodent_test_list[[sp_name]]
+    
+      if (length(train_reps) == 0 || length(test_reps) == 0) {
+        warning("No training/testing replicates for ", sp_name)
+        next
+      }
+    
+      species_eval <- list()
+      species_importance <- list()
+      species_boyce <- list()
+      species_predictions <- list()
+    
+      for (r in seq_len(min(nrep, length(train_reps),
+                            length(test_reps)))) {
+    
+        message("  Replicate ", r, " of ", nrep)
+    
+        train_df <- as.data.frame(train_reps[[r]])
+        test_df  <- as.data.frame(test_reps[[r]])
+    
+        if (is.null(train_df) || is.null(test_df) ||
+            nrow(train_df) == 0 || nrow(test_df) == 0) {
+          next
+        }
+    
+        # Check required variables
+        required_vars <- c("presence", rodent_vars)
+    
+        if (!all(required_vars %in% names(train_df)) ||
+            !all(required_vars %in% names(test_df))) {
+          warning("Required columns missing for ", sp_name,
+                  ", replicate ", r)
+          next
+        }
+    
+        train_df <- train_df[, required_vars, drop = FALSE]
+        test_df  <- test_df[, required_vars, drop = FALSE]
+    
+        train_df <- na.omit(train_df)
+        test_df  <- na.omit(test_df)
+    
+        train_df$presence <- as.numeric(train_df$presence)
+        test_df$presence  <- as.numeric(test_df$presence)
+    
+        # Both classes must be present
+        if (length(unique(train_df$presence)) < 2 ||
+            length(unique(test_df$presence)) < 2) {
+          warning("Only one class in data for ", sp_name,
+                  ", replicate ", r)
+          next
+        }
+    
+        # Ensure predictors are numeric
+        train_df[rodent_vars] <- lapply(
+          train_df[rodent_vars], as.numeric
+        )
+        test_df[rodent_vars] <- lapply(
+          test_df[rodent_vars], as.numeric
+        )
+    
+        # fit BRT
+        brt_model <- tryCatch({
+    
+          dismo::gbm.step(
+            data = train_df,
+            gbm.x = match(rodent_vars, names(train_df)),
+            gbm.y = match("presence", names(train_df)),
+            family = "bernoulli",
+            tree.complexity = 2,
+            learning.rate = 0.001,
+            bag.fraction = 0.75,
+            cv.folds = 5,
+            max.trees = 10000,
+            n.trees = 50,
+            step.size = 50,
+            verbose = FALSE
+          )
+    
+        }, error = function(e) {
+          warning("BRT failed for ", sp_name,
+                  ", replicate ", r, ": ", e$message)
+          NULL
+        })
+    
+        if (is.null(brt_model)) next
+    
+        # Save model
+        safe_species <- gsub("[^A-Za-z0-9_-]", "_", sp_name)
+    
+        saveRDS(
+          brt_model,
+          file.path(
+            output_folder, "Models",
+            paste0(safe_species, "_rep", r, ".rds")
+          )
+        )
+        
+        # predict on test data
+        test_pred <- tryCatch({
+    
+          predict(
+            brt_model,
+            newdata = test_df[, rodent_vars, drop = FALSE],
+            n.trees = brt_model$gbm.call$best.trees,
+            type = "response"
+          )
+    
+        }, error = function(e) {
+          warning("Test prediction failed for ", sp_name,
+                  ", replicate ", r, ": ", e$message)
+          NULL
+        })
+    
+        if (is.null(test_pred)) next
+    
+        # Evaluate held-out data
+        metrics <- calculate_metrics(
+          observed = test_df$presence,
+          predicted = test_pred
+        )
+    
+        metrics$Species <- sp_name
+        metrics$Replicate <- r
+    
+        species_eval[[r]] <- metrics
+    
+        # variable importance
+        importance <- tryCatch({
+    
+          summary(
+            brt_model,
+            n.trees = brt_model$gbm.call$best.trees,
+            plotit = FALSE
+          )
+    
+        }, error = function(e) NULL)
+    
+        if (!is.null(importance)) {
+    
+          importance <- as.data.frame(importance)
+          importance$Species <- sp_name
+          importance$Replicate <- r
+    
+          species_importance[[r]] <- importance
+        }
+    
+        # predict habitat suitability across Mongolia
+        suitability <- tryCatch({
+    
+          raster::predict(
+            environmental_rodents,
+            brt_model,
+            n.trees = brt_model$gbm.call$best.trees,
+            type = "response",
+            na.rm = TRUE,
+            progress = "text"
+          )
+    
+        }, error = function(e) {
+          warning("Raster prediction failed for ", sp_name,
+                  ", replicate ", r, ": ", e$message)
+          NULL
+        })
+    
+        if (!is.null(suitability)) {
+    
+          species_predictions[[length(species_predictions) + 1]] <-
+            suitability
+    
+          writeRaster(
+            suitability,
+            filename = file.path(
+              output_folder, "Maps",
+              paste0(safe_species, "_rep", r, ".tif")
+            ),
+            format = "GTiff",
+            overwrite = TRUE
+          )
+    
+          # Continuous Boyce Index
+          if (requireNamespace("ecospat", quietly = TRUE)) {
+    
+            presence_test <- test_df$presence == 1
+    
+            boyce <- tryCatch({
+    
+              ecospat::ecospat.boyce(
+                fit = raster::getValues(suitability),
+                obs = test_pred[presence_test],
+                nclass = 0,
+                PEplot = FALSE
+              )$Spearman.cor
+    
+            }, error = function(e) NA_real_)
+    
+            species_boyce[[r]] <- data.frame(
+              Species = sp_name,
+              Replicate = r,
+              Boyce = as.numeric(boyce)
+            )
+          }
+        }
+    
+        # Save progress after each replicate
+        if (length(species_eval) > 0) {
+          evaluation_results[[sp_name]] <-
+            do.call(rbind, species_eval)
+        }
+    
+        if (length(species_importance) > 0) {
+          importance_results[[sp_name]] <-
+            do.call(rbind, species_importance)
+        }
+    
+        if (length(species_boyce) > 0) {
+          boyce_results[[sp_name]] <-
+            do.call(rbind, species_boyce)
+        }
+    
+        saveRDS(
+          evaluation_results,
+          file.path(output_folder, "evaluation_results_progress.rds")
+        )
+      }
+    
+      # summarize predictions for each species
+      if (length(species_predictions) > 0) {
+    
+        prediction_stack <- raster::stack(species_predictions)
+    
+        mean_suitability <- raster::calc(
+          prediction_stack, fun = mean, na.rm = TRUE
+        )
+    
+        sd_suitability <- raster::calc(
+          prediction_stack, fun = sd, na.rm = TRUE
+        )
+    
+        safe_species <- gsub("[^A-Za-z0-9_-]", "_", sp_name)
+    
+        writeRaster(
+          mean_suitability,
+          filename = file.path(
+            output_folder, "Maps",
+            paste0(safe_species, "_mean_suitability.tif")
+          ),
+          format = "GTiff",
+          overwrite = TRUE
+        )
+    
+        writeRaster(
+          sd_suitability,
+          filename = file.path(
+            output_folder, "Maps",
+            paste0(safe_species, "_sd_suitability.tif")
+          ),
+          format = "GTiff",
+          overwrite = TRUE
+        )
+      }
+    
+      # Save species results
+      saveRDS(
+        evaluation_results,
+        file.path(output_folder, "evaluation_results.rds")
+      )
+    
+      saveRDS(
+        importance_results,
+        file.path(output_folder, "variable_importance.rds")
+      )
+    
+      saveRDS(
+        boyce_results,
+        file.path(output_folder, "boyce_results.rds")
+      )
+    }
+
+# export summary tables
+    if (length(evaluation_results) > 0) {
+      evaluation_df <- do.call(rbind, evaluation_results)
+      write.csv(
+        evaluation_df,
+        file.path(output_folder, "BRT_evaluation_results.csv"),
+        row.names = FALSE
+      )
+    
+      # Summarize mean and SD of metrics across replicates
+      metric_names <- c(
+        "AUC", "Threshold", "Sensitivity",
+        "Specificity", "TSS"
+      )
+    
+      evaluation_summary <- evaluation_df %>%
+        group_by(Species) %>%
+        summarise(
+          across(
+            all_of(metric_names),
+            list(
+              mean = ~ mean(.x, na.rm = TRUE),
+              sd = ~ sd(.x, na.rm = TRUE)
+            ),
+            .names = "{.col}_{.fn}"
+          ),
+          n_replicates = n(),
+          .groups = "drop"
+        )
+    
+      write.csv(
+        evaluation_summary,
+        file.path(output_folder, "BRT_evaluation_summary.csv"),
+        row.names = FALSE
+      )
+    }
+    
+    if (length(importance_results) > 0) {
+    
+      importance_df <- do.call(rbind, importance_results)
+    
+      write.csv(
+        importance_df,
+        file.path(output_folder, "BRT_variable_importance.csv"),
+        row.names = FALSE
+      )
+    }
+    
+    if (length(boyce_results) > 0) {
+    
+      boyce_df <- do.call(rbind, boyce_results)
+    
+      write.csv(
+        boyce_df,
+        file.path(output_folder, "BRT_boyce_results.csv"),
+        row.names = FALSE
+      )
+    }
+
+```
+
+
+```{r outputting rodent BRT plots}
+
+# define input and output folders
+# Folder containing mean and SD rasters from the rodent BRT analysis
+    input_folder <- file.path("Rodent_BRT_Results", "Maps")
+
+# Output folder for plots
+    output_folder <- file.path("Mongolia_rodentdata","BRT_Plots")
+
+    dir.create(
+      output_folder,
+      recursive = TRUE,
+      showWarnings = FALSE
+    )
+
+# define plotting settings
+    plasma_colors <- viridis::plasma(100)
+    
+# Mongolia projection
+    mongolia_crs <- paste0(
+      "+proj=lcc ",
+      "+lat_1=44 ",
+      "+lat_2=50 ",
+      "+lat_0=46 ",
+      "+lon_0=103 ",
+      "+datum=WGS84 ",
+      "+units=m ",
+      "+no_defs"
+    )
+
+# plotting function
+    plot_brt_map <- function(
+        prediction_raster,
+        filename,
+        map_title,
+        output_folder,
+        mongolia_crs,
+        plasma_colors,
+        legend_title = "Habitat\nsuitability",
+        limits = c(0, 1)
+    ) {
+    
+      # Project raster for plotting
+      plot_raster <- terra::project(
+        prediction_raster,
+        mongolia_crs,
+        method = "bilinear"
+      )
+    
+      # Convert raster to dataframe
+      map_df <- terra::as.data.frame(
+        plot_raster,
+        xy = TRUE,
+        na.rm = TRUE
+      )
+    
+      names(map_df)[3] <- "suitability"
+    
+      # Create map
+      brt_map <- ggplot(
+        map_df,
+        aes(
+          x = x,
+          y = y,
+          fill = suitability
+        )
+      ) +
+        geom_raster() +
+        scale_fill_gradientn(
+          colours = plasma_colors,
+          limits = limits,
+          breaks = seq(
+            limits[1],
+            limits[2],
+            length.out = 5
+          ),
+          oob = scales::squish,
+          name = legend_title
+        ) +
+        coord_sf(
+          crs = sf::st_crs(mongolia_crs),
+          expand = FALSE
+        ) +
+        ggspatial::annotation_scale(
+          location = "br",
+          width_hint = 0.30,
+          unit_category = "metric",
+          unit = "km",
+          breaks = 500,
+          text_cex = 1,
+          style = "ticks"
+        ) +
+        ggspatial::annotation_north_arrow(
+          location = "tl",
+          which_north = "true",
+          style = ggspatial::north_arrow_minimal,
+          height = unit(0.6, "cm"),
+          width = unit(0.6, "cm"),
+          pad_x = unit(0.2, "cm"),
+          pad_y = unit(0.2, "cm")
+        ) +
+        labs(
+          title = map_title,
+          x = NULL,
+          y = NULL
+        ) +
+        theme_minimal() +
+        theme(
+          axis.text = element_blank(),
+          axis.ticks = element_blank(),
+          panel.grid = element_blank(),
+          plot.title = element_text(
+            size = 16,
+            hjust = 0.5
+          ),
+          legend.title = element_text(size = 12),
+          legend.text = element_text(size = 11)
+        )
+    
+      # Export SVG
+      ggsave(
+        filename = file.path(
+          output_folder,
+          paste0(filename, ".svg")
+        ),
+        plot = brt_map,
+        width = 8,
+        height = 6,
+        units = "in",
+        dpi = 300
+      )
+    
+      # Export PNG
+      ggsave(
+        filename = file.path(
+          output_folder,
+          paste0(filename, ".png")
+        ),
+        plot = brt_map,
+        width = 8,
+        height = 6,
+        units = "in",
+        dpi = 300
+      )
+    
+      return(brt_map)
+    }
+
+# export mean habitat suitability maps
+    mean_files <- list.files(
+      input_folder,
+      pattern = "_mean_suitability\\.tif$",
+      full.names = TRUE
+    )
+    
+    if (length(mean_files) == 0) {
+      stop(
+        "No mean suitability rasters found in: ",
+        input_folder
+      )
+    }
+    
+    mean_maps <- list()
+    
+    for (raster_file in mean_files) {
+    
+      species_name <- sub(
+        "_mean_suitability\\.tif$",
+        "",
+        basename(raster_file)
+      )
+    
+      message("Plotting mean suitability: ", species_name)
+    
+      mean_prediction <- terra::rast(raster_file)
+    
+      mean_maps[[species_name]] <- plot_brt_map(
+        prediction_raster = mean_prediction,
+        filename = paste0(species_name, "_Mean_BRT_Map"),
+        map_title = paste(
+          gsub("_", " ", species_name),
+          "Mean Habitat Suitability"
+        ),
+        output_folder = output_folder,
+        mongolia_crs = mongolia_crs,
+        plasma_colors = plasma_colors,
+        legend_title = "Mean habitat\nsuitability",
+        limits = c(0, 1)
+      )
+    
+      print(mean_maps[[species_name]])
+    }
+
+# export standard deviation maps
+    sd_files <- list.files(
+      input_folder,
+      pattern = "_sd_suitability\\.tif$",
+      full.names = TRUE
+    )
+    
+    sd_maps <- list()
+    
+    for (raster_file in sd_files) {
+    
+      species_name <- sub(
+        "_sd_suitability\\.tif$",
+        "",
+        basename(raster_file)
+      )
+    
+      message("Plotting prediction variability: ", species_name)
+    
+      sd_prediction <- terra::rast(raster_file)
+    
+      sd_maps[[species_name]] <- plot_brt_map(
+        prediction_raster = sd_prediction,
+        filename = paste0(species_name, "_SD_BRT_Map"),
+        map_title = paste(
+          gsub("_", " ", species_name),
+          "Prediction Variability"
+        ),
+        output_folder = output_folder,
+        mongolia_crs = mongolia_crs,
+        plasma_colors = plasma_colors,
+        legend_title = "Prediction SD",
+        limits = c(0, 0.5)
+      )
+    
+      print(sd_maps[[species_name]])
+    }
+
+```
+
+```{r BRT relative influence Rodents}
+
+# set output folder
+    output_folder <- "Rodent_BRT_Results"
+    
+    importance_folder <- file.path(output_folder, "Variable_Importance")
+    
+    dir.create(
+      importance_folder,
+      recursive = TRUE,
+      showWarnings = FALSE
+    )
+
+# load variable importance results
+    importance_results <- readRDS(
+      file.path(
+        output_folder,
+        "variable_importance.rds"
+      )
+    )
+
+# define predictor names and labels
+    rodent_var_labels <- c(
+      "MinTempColdMnth" = "Minimum Temperature of Coldest Month",
+      "PrcpDryMnth" = "Precipitation of Driest Month",
+      "PrcpSeasonality" = "Precipitation Seasonality",
+      "clay_soilgrids" = "Soil Clay Content",
+      "wc2.1_30s_elev" = "Elevation",
+      "coarsefrag_soilgrids" = "Soil Coarse Fragments",
+      "organiccarbon_soilgrids" = "Soil Organic Carbon"
+    )
+
+# function to plot variable relative influence
+    plot_variable_importance <- function(
+        importance_df,
+        species_name,
+        filename,
+        output_folder,
+        rodent_var_labels
+    ) {
+    
+      # confirm the data has the required columns
+      required_columns <- c("var", "rel.inf")
+    
+      if (!all(required_columns %in% names(importance_df))) {
+        warning(
+          "Missing required columns for ", species_name,
+          ". Available columns: ",
+          paste(names(importance_df), collapse = ", ")
+        )
+        return(NULL)
+      }
+    
+      # Calculate mean relative influence across replicates
+      rel_inf <- importance_df %>%
+        dplyr::filter(
+          !is.na(var),
+          !is.na(rel.inf)
+        ) %>%
+        dplyr::group_by(var) %>%
+        dplyr::summarise(
+          Mean_Relative_Influence = mean(rel.inf, na.rm = TRUE),
+          SD_Relative_Influence = sd(rel.inf, na.rm = TRUE),
+          N = dplyr::n(),
+          .groups = "drop"
+        ) %>%
+        dplyr::mutate(
+          var = as.character(var),
+          var_label = dplyr::if_else(
+            var %in% names(rodent_var_labels),
+            unname(rodent_var_labels[var]),
+            var
+          )
+        ) %>%
+        dplyr::arrange(Mean_Relative_Influence)
+    
+      if (nrow(rel_inf) == 0) {
+        warning("No usable variable importance data for ", species_name)
+        return(NULL)
+      }
+    
+      # Order bars from lowest to highest
+      rel_inf$var_label <- factor(
+        rel_inf$var_label,
+        levels = rel_inf$var_label
+      )
+    
+      # Create plot
+      importance_plot <- ggplot2::ggplot(
+        rel_inf,
+        ggplot2::aes(
+          x = var_label,
+          y = Mean_Relative_Influence,
+          fill = Mean_Relative_Influence
+        )
+      ) +
+        ggplot2::geom_col() +
+        ggplot2::coord_flip() +
+        ggplot2::scale_fill_gradientn(
+          colours = viridis::plasma(100)[1:50]
+        ) +
+        ggplot2::geom_text(
+          ggplot2::aes(
+            label = round(Mean_Relative_Influence, 2)
+          ),
+          hjust = -0.1,
+          size = 4
+        ) +
+        ggplot2::scale_y_continuous(
+          expand = ggplot2::expansion(mult = c(0, 0.2))
+        ) +
+        ggplot2::labs(
+          title = paste(
+            "Variable Relative Influence:",
+            species_name
+          ),
+          x = NULL,
+          y = "Mean Relative Influence (%)",
+          fill = "Relative Influence"
+        ) +
+        ggplot2::theme_minimal() +
+        ggplot2::theme(
+          axis.text.y = ggplot2::element_text(size = 10),
+          axis.text.x = ggplot2::element_text(size = 10),
+          plot.title = ggplot2::element_text(
+            size = 13,
+            face = "bold"
+          ),
+          panel.grid.major.y = ggplot2::element_blank(),
+          panel.grid.minor = ggplot2::element_blank()
+        )
+    
+      # Save plot
+      output_file <- file.path(
+        output_folder,
+        paste0(filename, ".svg")
+      )
+    
+      ggplot2::ggsave(
+        filename = output_file,
+        plot = importance_plot,
+        width = 10,
+        height = 6,
+        units = "in"
+      )
+    
+      message("Saved: ", output_file)
+    
+      return(importance_plot)
+    }
+
+# loop through all rodent species
+    rodent_importance_plots <- list()
+    
+    for (sp_name in names(importance_results)) {
+      message("\nProcessing species: ", sp_name)
+      species_importance <- importance_results[[sp_name]]
+    
+      # Check the data structure
+      if (is.null(species_importance)) {
+        warning("NULL importance data for: ", sp_name)
+        next
+      }
+    
+      if (!is.data.frame(species_importance)) {
+        warning("Importance data are not a data frame for: ", sp_name)
+        print(class(species_importance))
+        next
+      }
+    
+      message(
+        "Rows: ", nrow(species_importance),
+        "; columns: ",
+        paste(names(species_importance), collapse = ", ")
+      )
+    
+      if (nrow(species_importance) == 0) {
+        warning("Zero rows for: ", sp_name)
+        next
+      }
+    
+      safe_species <- gsub(
+        "[^A-Za-z0-9_-]",
+        "_",
+        sp_name
+      )
+    
+      p <- tryCatch(
+        plot_variable_importance(
+          importance_df = species_importance,
+          species_name = sp_name,
+          filename = paste0(
+            safe_species,
+            "_Variable_Relative_Influence"
+          ),
+          output_folder = importance_folder,
+          rodent_var_labels = rodent_var_labels
+        ),
+        error = function(e) {
+          warning(
+            "Plotting failed for ", sp_name,
+            ": ", conditionMessage(e)
+          )
+          return(NULL)
+        }
+      )
+    
+      if (!is.null(p)) {
+        rodent_importance_plots[[sp_name]] <- p
+      }
+    }
+
+# save averaged relative influence table
+    importance_summary <- dplyr::bind_rows(
+      lapply(names(importance_results), function(sp_name) {
+    
+        df <- importance_results[[sp_name]]
+    
+        if (
+          is.null(df) ||
+          !is.data.frame(df) ||
+          !all(c("var", "rel.inf") %in% names(df))
+        ) {
+          return(NULL)
+        }
+    
+        df %>%
+          dplyr::filter(!is.na(var), !is.na(rel.inf)) %>%
+          dplyr::group_by(var) %>%
+          dplyr::summarise(
+            Mean_Relative_Influence = mean(rel.inf, na.rm = TRUE),
+            SD_Relative_Influence = sd(rel.inf, na.rm = TRUE),
+            N_Replicates = dplyr::n(),
+            .groups = "drop"
+          ) %>%
+          dplyr::mutate(
+            Species = sp_name,
+            .before = 1
+          )
+      })
+    )
+
+    write.csv(
+      importance_summary,
+      file.path(
+        importance_folder,
+        "Rodent_Mean_Variable_Relative_Influence.csv"
+      ),
+      row.names = FALSE
+    )
+
+```
+
+
